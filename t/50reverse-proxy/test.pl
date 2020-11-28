@@ -56,7 +56,7 @@ my $upstream = $unix_socket_file ? "[unix:$unix_socket_file]" : "127.0.0.1:@{[em
 
 my $guard = do {
     local $ENV{FORCE_CHUNKED} = $starlet_force_chunked;
-    my @args = (qw(plackup -s Starlet --keepalive-timeout 100 --access-log /dev/null --listen), $unix_socket_file || $upstream);
+    my @args = (qw(plackup -s Starlet --max-workers=20 --keepalive-timeout 100 --access-log /dev/null --listen), $unix_socket_file || $upstream);
     if ($starlet_keepalive) {
         push @args, "--max-keepalive-reqs=100";
     }
@@ -212,6 +212,20 @@ run_with_curl($server, sub {
         like $resp, qr{^/echo-request-uri/abc$}mi;
     };
 });
+
+subtest 'HTTP/1 request body streaming and pipelining' => sub {
+    plan skip_all => 'h2load not found'
+        unless prog_exists('h2load');
+    my $doit = sub {
+        my ($nr, $opts, $port) = @_;
+        my $out = `h2load --h1 -m $nr -n $nr -c 1 -t 1 $opts http://127.0.0.1:$port/echo`;
+        like $out, qr{$nr succeeded}m;
+    };
+    $doit->('10', '', $server->{port});
+    $doit->('20', '', $server->{port});
+    $doit->('10', '-d t/50reverse-proxy/hello.txt ', $server->{port});
+    $doit->('10', "-d $huge_file ", $server->{port});
+};
 
 subtest 'nghttp' => sub {
     plan skip_all => 'nghttp not found'

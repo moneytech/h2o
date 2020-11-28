@@ -18,6 +18,7 @@ listen:
     key-file: examples/h2o/server.key
     certificate-file: examples/h2o/server.crt
     cipher-suite: AES128-SHA
+    max-version: TLSv1.2
 hosts:
   default:
     paths:
@@ -34,5 +35,9 @@ my ($guard, $pid) = spawn_server(
 # connect to the server with AES256-SHA as the first choice, and check that AES128-SHA was selected
 my $log = `openssl s_client -cipher AES256-SHA:AES128-SHA -host 127.0.0.1 -port $port < /dev/null 2>&1`;
 like $log, qr/^\s*Cipher\s*:\s*AES128-SHA\s*$/m;
+
+# connect to the server with AES256-SHA as the only choice, and check that handshake failure is returned
+$log = `openssl s_client -cipher AES256-SHA -host 127.0.0.1 -port $port < /dev/null 2>&1`;
+like $log, qr/alert handshake failure/m; # "handshake failure" the official name for TLS alert 40
 
 done_testing;

@@ -62,9 +62,25 @@ enum {
     ELEMENT_TYPE_REQUEST_TOTAL_TIME,            /* %{request-total-time}x */
     ELEMENT_TYPE_PROCESS_TIME,                  /* %{process-time}x */
     ELEMENT_TYPE_RESPONSE_TIME,                 /* %{response-total-time}x */
-    ELEMENT_TYPE_DURATION,                      /* %{duration}x */
+    ELEMENT_TYPE_TOTAL_TIME,                    /* %{total-time}x */
     ELEMENT_TYPE_ERROR,                         /* %{error}x */
     ELEMENT_TYPE_PROTOCOL_SPECIFIC,             /* %{protocol-specific...}x */
+    ELEMENT_TYPE_PROXY_IDLE_TIME,               /* %{proxy.idle-time}x */
+    ELEMENT_TYPE_PROXY_CONNECT_TIME,            /* %{proxy.connect-time}x */
+    ELEMENT_TYPE_PROXY_REQUEST_TIME,            /* %{proxy.request-time}x */
+    ELEMENT_TYPE_PROXY_PROCESS_TIME,            /* %{proxy.process-time}x */
+    ELEMENT_TYPE_PROXY_RESPONSE_TIME,           /* %{proxy.response-time}x */
+    ELEMENT_TYPE_PROXY_TOTAL_TIME,              /* %{proxy.total-time}x */
+    ELEMENT_TYPE_PROXY_REQUEST_BYTES,           /* %{proxy.request-bytes}x */
+    ELEMENT_TYPE_PROXY_REQUEST_BYTES_HEADER,    /* %{proxy.request-bytes-header}x */
+    ELEMENT_TYPE_PROXY_REQUEST_BYTES_BODY,      /* %{proxy.request-bytes-body}x */
+    ELEMENT_TYPE_PROXY_RESPONSE_BYTES,          /* %{proxy.response-bytes}x */
+    ELEMENT_TYPE_PROXY_RESPONSE_BYTES_HEADER,   /* %{proxy.response-bytes-header}x */
+    ELEMENT_TYPE_PROXY_RESPONSE_BYTES_BODY,     /* %{proxy.response-bytes-body}x */
+    ELEMENT_TYPE_PROXY_SSL_PROTOCOL_VERSION,    /* ${proxy.ssl.protocol-version}x */
+    ELEMENT_TYPE_PROXY_SSL_SESSION_REUSED,      /* ${proxy.ssl.session-reused}x */
+    ELEMENT_TYPE_PROXY_SSL_CIPHER,              /* ${proxy.ssl.cipher}x */
+    ELEMENT_TYPE_PROXY_SSL_CIPHER_BITS,         /* ${proxy.ssl.cipher_bits}x */
     NUM_ELEMENT_TYPES
 };
 
@@ -245,8 +261,25 @@ h2o_logconf_t *h2o_logconf_compile(const char *fmt, int escape, char *errbuf)
                     MAP_EXT_TO_TYPE("request-body-time", ELEMENT_TYPE_REQUEST_BODY_TIME);
                     MAP_EXT_TO_TYPE("process-time", ELEMENT_TYPE_PROCESS_TIME);
                     MAP_EXT_TO_TYPE("response-time", ELEMENT_TYPE_RESPONSE_TIME);
-                    MAP_EXT_TO_TYPE("duration", ELEMENT_TYPE_DURATION);
+                    MAP_EXT_TO_TYPE("duration", ELEMENT_TYPE_TOTAL_TIME);
+                    MAP_EXT_TO_TYPE("total-time", ELEMENT_TYPE_TOTAL_TIME);
                     MAP_EXT_TO_TYPE("error", ELEMENT_TYPE_ERROR);
+                    MAP_EXT_TO_TYPE("proxy.idle-time", ELEMENT_TYPE_PROXY_IDLE_TIME);
+                    MAP_EXT_TO_TYPE("proxy.connect-time", ELEMENT_TYPE_PROXY_CONNECT_TIME);
+                    MAP_EXT_TO_TYPE("proxy.request-time", ELEMENT_TYPE_PROXY_REQUEST_TIME);
+                    MAP_EXT_TO_TYPE("proxy.process-time", ELEMENT_TYPE_PROXY_PROCESS_TIME);
+                    MAP_EXT_TO_TYPE("proxy.response-time", ELEMENT_TYPE_PROXY_RESPONSE_TIME);
+                    MAP_EXT_TO_TYPE("proxy.total-time", ELEMENT_TYPE_PROXY_TOTAL_TIME);
+                    MAP_EXT_TO_TYPE("proxy.request-bytes", ELEMENT_TYPE_PROXY_REQUEST_BYTES);
+                    MAP_EXT_TO_TYPE("proxy.request-bytes-header", ELEMENT_TYPE_PROXY_REQUEST_BYTES_HEADER);
+                    MAP_EXT_TO_TYPE("proxy.request-bytes-body", ELEMENT_TYPE_PROXY_REQUEST_BYTES_BODY);
+                    MAP_EXT_TO_TYPE("proxy.response-bytes", ELEMENT_TYPE_PROXY_RESPONSE_BYTES);
+                    MAP_EXT_TO_TYPE("proxy.response-bytes-header", ELEMENT_TYPE_PROXY_RESPONSE_BYTES_HEADER);
+                    MAP_EXT_TO_TYPE("proxy.response-bytes-body", ELEMENT_TYPE_PROXY_RESPONSE_BYTES_BODY);
+                    MAP_EXT_TO_TYPE("proxy.ssl.protocol-version", ELEMENT_TYPE_PROXY_SSL_PROTOCOL_VERSION);
+                    MAP_EXT_TO_TYPE("proxy.ssl.session-reused", ELEMENT_TYPE_PROXY_SSL_SESSION_REUSED);
+                    MAP_EXT_TO_TYPE("proxy.ssl.cipher", ELEMENT_TYPE_PROXY_SSL_CIPHER);
+                    MAP_EXT_TO_TYPE("proxy.ssl.cipher-bits", ELEMENT_TYPE_PROXY_SSL_CIPHER_BITS);
                     MAP_EXT_TO_PROTO("http1.request-index", http1.request_index);
                     MAP_EXT_TO_PROTO("http2.stream-id", http2.stream_id);
                     MAP_EXT_TO_PROTO("http2.priority.received", http2.priority_received);
@@ -256,11 +289,16 @@ h2o_logconf_t *h2o_logconf_compile(const char *fmt, int escape, char *errbuf)
                     MAP_EXT_TO_PROTO("http2.priority.actual", http2.priority_actual);
                     MAP_EXT_TO_PROTO("http2.priority.actual.parent", http2.priority_actual_parent);
                     MAP_EXT_TO_PROTO("http2.priority.actual.weight", http2.priority_actual_weight);
+                    MAP_EXT_TO_PROTO("http3.stream-id", http3.stream_id);
+                    MAP_EXT_TO_PROTO("http3.quic-stats", http3.quic_stats);
+                    MAP_EXT_TO_PROTO("cc.name", congestion_control.name_);
                     MAP_EXT_TO_PROTO("ssl.protocol-version", ssl.protocol_version);
                     MAP_EXT_TO_PROTO("ssl.session-reused", ssl.session_reused);
                     MAP_EXT_TO_PROTO("ssl.cipher", ssl.cipher);
                     MAP_EXT_TO_PROTO("ssl.cipher-bits", ssl.cipher_bits);
                     MAP_EXT_TO_PROTO("ssl.session-id", ssl.session_id);
+                    MAP_EXT_TO_PROTO("ssl.server-name", ssl.server_name);
+                    MAP_EXT_TO_PROTO("ssl.negotiated-protocol", ssl.negotiated_protocol);
                     { /* not found */
                         h2o_iovec_t name = strdup_lowercased(pt, quote_end - pt);
                         NEW_ELEMENT(ELEMENT_TYPE_EXTENDED_VAR);
@@ -440,6 +478,14 @@ Fail:
     return pos;
 }
 
+#define APPEND_SAFE_STRING_WITH_LEN(pos, s, len)                                                                                   \
+    do {                                                                                                                           \
+        if (s == NULL)                                                                                                             \
+            goto EmitNull;                                                                                                         \
+        RESERVE(len);                                                                                                              \
+        pos = append_safe_string(pos, s, len);                                                                                     \
+    } while (0)
+#define APPEND_SAFE_STRING(pos, s) APPEND_SAFE_STRING_WITH_LEN(pos, s, strlen(s))
 #define APPEND_DURATION(pos, name)                                                                                                 \
     do {                                                                                                                           \
         int64_t delta_usec;                                                                                                        \
@@ -458,11 +504,11 @@ Fail:
             }                                                                                                                      \
             pos += 6;                                                                                                              \
         }                                                                                                                          \
-    } while (0);
+    } while (0)
 
-static char *expand_line_buf(char *line, size_t cur_size, size_t required, int should_realloc)
+static char *expand_line_buf(char *line, size_t *cur_size, size_t required, int should_realloc)
 {
-    size_t new_size = cur_size;
+    size_t new_size = *cur_size;
 
     /* determine the new size */
     do {
@@ -472,11 +518,12 @@ static char *expand_line_buf(char *line, size_t cur_size, size_t required, int s
     /* reallocate */
     if (!should_realloc) {
         char *newpt = h2o_mem_alloc(new_size);
-        memcpy(newpt, line, cur_size);
+        memcpy(newpt, line, *cur_size);
         line = newpt;
     } else {
         line = h2o_mem_realloc(line, new_size);
     }
+    *cur_size = new_size;
 
     return line;
 }
@@ -514,8 +561,10 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
     do {                                                                                                                           \
         if ((capacity) + element->suffix.len > line_end - pos) {                                                                   \
             size_t off = pos - line;                                                                                               \
-            line = expand_line_buf(line, line_end - line, off + (capacity) + element->suffix.len, should_realloc_on_expand);       \
+            size_t size = line_end - line;                                                                                         \
+            line = expand_line_buf(line, &size, off + (capacity) + element->suffix.len, should_realloc_on_expand);                 \
             pos = line + off;                                                                                                      \
+            line_end = line + size;                                                                                                \
             should_realloc_on_expand = 1;                                                                                          \
         }                                                                                                                          \
     } while (0)
@@ -530,7 +579,7 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             break;
         case ELEMENT_TYPE_BYTES_SENT: /* %b */
             RESERVE(sizeof(H2O_UINT64_LONGEST_STR) - 1);
-            pos += sprintf(pos, "%" PRIu64, (uint64_t)req->bytes_sent);
+            pos += sprintf(pos, "%" PRIu64, req->bytes_sent);
             break;
         case ELEMENT_TYPE_PROTOCOL: /* %H */
             if (req->version == 0)
@@ -737,35 +786,90 @@ char *h2o_log_request(h2o_logconf_t *logconf, h2o_req_t *req, size_t *len, char 
             APPEND_DURATION(pos, response_time);
             break;
 
-        case ELEMENT_TYPE_DURATION:
-            APPEND_DURATION(pos, duration);
+        case ELEMENT_TYPE_TOTAL_TIME:
+            APPEND_DURATION(pos, total_time);
             break;
 
-        case ELEMENT_TYPE_ERROR: {
-            size_t i;
-            for (i = 0; i != req->error_logs.size; ++i) {
-                h2o_req_error_log_t *log = req->error_logs.entries + i;
-                size_t module_len = strlen(log->module);
-                RESERVE(sizeof("[] ") - 1 + module_len + log->msg.len * unsafe_factor);
-                *pos++ = '[';
-                pos = append_safe_string(pos, log->module, module_len);
-                *pos++ = ']';
-                *pos++ = ' ';
-                pos = append_unsafe_string(pos, log->msg.base, log->msg.len);
-            }
-        } break;
+        case ELEMENT_TYPE_ERROR:
+            if (req->error_logs != NULL)
+                pos = append_unsafe_string(pos, req->error_logs->bytes, req->error_logs->size);
+            break;
 
+        case ELEMENT_TYPE_PROXY_IDLE_TIME:
+            APPEND_DURATION(pos, proxy_idle_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_CONNECT_TIME:
+            APPEND_DURATION(pos, proxy_connect_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_REQUEST_TIME:
+            APPEND_DURATION(pos, proxy_request_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_PROCESS_TIME:
+            APPEND_DURATION(pos, proxy_process_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_RESPONSE_TIME:
+            APPEND_DURATION(pos, proxy_response_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_TOTAL_TIME:
+            APPEND_DURATION(pos, proxy_total_time);
+            break;
+
+        case ELEMENT_TYPE_PROXY_REQUEST_BYTES:
+            RESERVE(sizeof(H2O_UINT64_LONGEST_STR) - 1);
+            pos += sprintf(pos, "%" PRIu64, req->proxy_stats.bytes_written.total);
+            break;
+
+        case ELEMENT_TYPE_PROXY_REQUEST_BYTES_HEADER:
+            RESERVE(sizeof(H2O_UINT64_LONGEST_STR) - 1);
+            pos += sprintf(pos, "%" PRIu64, req->proxy_stats.bytes_written.header);
+            break;
+
+        case ELEMENT_TYPE_PROXY_REQUEST_BYTES_BODY:
+            RESERVE(sizeof(H2O_UINT64_LONGEST_STR) - 1);
+            pos += sprintf(pos, "%" PRIu64, req->proxy_stats.bytes_written.body);
+            break;
+
+        case ELEMENT_TYPE_PROXY_RESPONSE_BYTES:
+            RESERVE(sizeof(H2O_UINT64_LONGEST_STR) - 1);
+            pos += sprintf(pos, "%" PRIu64, req->proxy_stats.bytes_read.total);
+            break;
+
+        case ELEMENT_TYPE_PROXY_RESPONSE_BYTES_HEADER:
+            RESERVE(sizeof(H2O_UINT64_LONGEST_STR) - 1);
+            pos += sprintf(pos, "%" PRIu64, req->proxy_stats.bytes_read.header);
+            break;
+
+        case ELEMENT_TYPE_PROXY_RESPONSE_BYTES_BODY:
+            RESERVE(sizeof(H2O_UINT64_LONGEST_STR) - 1);
+            pos += sprintf(pos, "%" PRIu64, req->proxy_stats.bytes_read.body);
+            break;
+        case ELEMENT_TYPE_PROXY_SSL_SESSION_REUSED:
+            RESERVE(1);
+            *pos++ = (req->proxy_stats.ssl.session_reused) ? '1' : '0';
+            break;
+        case ELEMENT_TYPE_PROXY_SSL_CIPHER_BITS:
+            if (req->proxy_stats.ssl.cipher_bits == 0)
+                goto EmitNull;
+            RESERVE(sizeof(H2O_INT16_LONGEST_STR));
+            pos += sprintf(pos, "%" PRIu16, (uint16_t)req->proxy_stats.ssl.cipher_bits);
+            break;
+        case ELEMENT_TYPE_PROXY_SSL_PROTOCOL_VERSION:
+            APPEND_SAFE_STRING(pos, req->proxy_stats.ssl.protocol_version);
+            break;
+        case ELEMENT_TYPE_PROXY_SSL_CIPHER:
+            APPEND_SAFE_STRING(pos, req->proxy_stats.ssl.cipher);
+            break;
         case ELEMENT_TYPE_PROTOCOL_SPECIFIC: {
             h2o_iovec_t (*cb)(h2o_req_t *) = req->conn->callbacks->log_.callbacks[element->data.protocol_specific_callback_index];
-            if (cb != NULL) {
-                h2o_iovec_t s = cb(req);
-                if (s.base == NULL)
-                    goto EmitNull;
-                RESERVE(s.len);
-                pos = append_safe_string(pos, s.base, s.len);
-            } else {
+            if (cb == NULL)
                 goto EmitNull;
-            }
+            h2o_iovec_t s = cb(req);
+            APPEND_SAFE_STRING_WITH_LEN(pos, s.base, s.len);
         } break;
 
         case ELEMENT_TYPE_LOGNAME:      /* %l */

@@ -68,6 +68,7 @@ static int32_t adjust_max_wait(h2o_evloop_t *loop, int32_t max_wait);
 
 /* functions to be defined in the backends */
 static int evloop_do_proceed(h2o_evloop_t *loop, int32_t max_wait);
+static void evloop_do_dispose(h2o_evloop_t *loop);
 static void evloop_do_on_socket_create(struct st_h2o_evloop_socket_t *sock);
 static void evloop_do_on_socket_close(struct st_h2o_evloop_socket_t *sock);
 static void evloop_do_on_socket_export(struct st_h2o_evloop_socket_t *sock);
@@ -120,7 +121,7 @@ static const char *on_read_core(int fd, h2o_buffer_t **input)
 
     while (1) {
         ssize_t rret;
-        h2o_iovec_t buf = h2o_buffer_reserve(input, 4096);
+        h2o_iovec_t buf = h2o_buffer_try_reserve(input, 4096);
         if (buf.base == NULL) {
             /* memory allocation failed */
             return h2o_socket_error_out_of_memory;
@@ -156,38 +157,42 @@ static void wreq_free_buffer_if_allocated(struct st_h2o_evloop_socket_t *sock)
     }
 }
 
-static int write_core(int fd, h2o_iovec_t **bufs, size_t *bufcnt)
+static int write_core(int fd, h2o_iovec_t **bufs, size_t *bufcnt, size_t *first_buf_written)
 {
     int iovcnt;
     ssize_t wret;
 
-    if (*bufcnt != 0) {
-        do {
-            /* write */
-            iovcnt = IOV_MAX;
-            if (*bufcnt < iovcnt)
-                iovcnt = (int)*bufcnt;
-            while ((wret = writev(fd, (struct iovec *)*bufs, iovcnt)) == -1 && errno == EINTR)
-                ;
-            if (wret == -1) {
-                if (errno != EAGAIN)
-                    return -1;
+    *first_buf_written = 0;
+
+    while (*bufcnt != 0) {
+        /* write */
+        iovcnt = IOV_MAX;
+        if (*bufcnt < iovcnt)
+            iovcnt = (int)*bufcnt;
+        while ((wret = writev(fd, (struct iovec *)*bufs, iovcnt)) == -1 && errno == EINTR)
+            ;
+        if (wret == -1) {
+            if (errno != EAGAIN)
+                return -1;
+            break;
+        }
+        /* adjust the buffer */
+        while ((*bufs)->len < wret) {
+            wret -= (*bufs)->len;
+            ++*bufs;
+            --*bufcnt;
+            --iovcnt;
+        }
+        assert(iovcnt > 0);
+        if ((*bufs)->len == wret) {
+            ++*bufs;
+            --*bufcnt;
+            if (--iovcnt != 0)
                 break;
-            }
-            /* adjust the buffer */
-            while ((*bufs)->len < wret) {
-                wret -= (*bufs)->len;
-                ++*bufs;
-                --*bufcnt;
-                assert(*bufcnt != 0);
-            }
-            if (((*bufs)->len -= wret) == 0) {
-                ++*bufs;
-                --*bufcnt;
-            } else {
-                (*bufs)->base += wret;
-            }
-        } while (*bufcnt != 0 && iovcnt == IOV_MAX);
+        } else {
+            *first_buf_written = wret;
+            break;
+        }
     }
 
     return 0;
@@ -195,6 +200,8 @@ static int write_core(int fd, h2o_iovec_t **bufs, size_t *bufcnt)
 
 void write_pending(struct st_h2o_evloop_socket_t *sock)
 {
+    size_t first_buf_written;
+
     assert(sock->super._cb.write != NULL);
 
     /* DONT_WRITE poll */
@@ -202,8 +209,10 @@ void write_pending(struct st_h2o_evloop_socket_t *sock)
         goto Complete;
 
     /* write */
-    if (write_core(sock->fd, &sock->_wreq.bufs, &sock->_wreq.cnt) == 0 && sock->_wreq.cnt != 0) {
+    if (write_core(sock->fd, &sock->_wreq.bufs, &sock->_wreq.cnt, &first_buf_written) == 0 && sock->_wreq.cnt != 0) {
         /* partial write */
+        sock->_wreq.bufs[0].base += first_buf_written;
+        sock->_wreq.bufs[0].len -= first_buf_written;
         return;
     }
 
@@ -219,7 +228,7 @@ Complete:
 static void read_on_ready(struct st_h2o_evloop_socket_t *sock)
 {
     const char *err = 0;
-    size_t prev_bytes_read = sock->super.input->size;
+    size_t prev_size = sock->super.input->size;
 
     if ((sock->_flags & H2O_SOCKET_FLAG_DONT_READ) != 0)
         goto Notify;
@@ -235,7 +244,7 @@ Notify:
      * behavior is intentional; it is designed as such so that the applications
      * can update their timeout counters when a partial SSL record arrives.
      */
-    sock->super.bytes_read = sock->super.input->size - prev_bytes_read;
+    sock->super.bytes_read += sock->super.input->size - prev_size;
     sock->super._cb.read(&sock->super, err);
 }
 
@@ -253,39 +262,30 @@ void do_dispose_socket(h2o_socket_t *_sock)
     link_to_statechanged(sock);
 }
 
-void do_write(h2o_socket_t *_sock, h2o_iovec_t *_bufs, size_t bufcnt, h2o_socket_cb cb)
+void do_write(h2o_socket_t *_sock, h2o_iovec_t *bufs, size_t bufcnt, h2o_socket_cb cb)
 {
     struct st_h2o_evloop_socket_t *sock = (struct st_h2o_evloop_socket_t *)_sock;
-    h2o_iovec_t *bufs;
-    h2o_iovec_t *tofree = NULL;
+    size_t first_buf_written, i;
 
     assert(sock->super._cb.write == NULL);
     assert(sock->_wreq.cnt == 0);
     sock->super._cb.write = cb;
 
-    /* cap the number of buffers, since we're using alloca */
-    if (bufcnt > 10000)
-        bufs = tofree = h2o_mem_alloc(sizeof(*bufs) * bufcnt);
-    else
-        bufs = alloca(sizeof(*bufs) * bufcnt);
-
-    memcpy(bufs, _bufs, sizeof(*bufs) * bufcnt);
-
     /* try to write now */
-    if (write_core(sock->fd, &bufs, &bufcnt) != 0) {
+    if (write_core(sock->fd, &bufs, &bufcnt, &first_buf_written) != 0) {
         /* fill in _wreq.bufs with fake data to indicate error */
         sock->_wreq.bufs = sock->_wreq.smallbufs;
         sock->_wreq.cnt = 1;
         *sock->_wreq.bufs = h2o_iovec_init(H2O_STRLIT("deadbeef"));
         sock->_flags |= H2O_SOCKET_FLAG_IS_WRITE_NOTIFY;
         link_to_pending(sock);
-        goto Out;
+        return;
     }
     if (bufcnt == 0) {
         /* write complete, schedule the callback */
         sock->_flags |= H2O_SOCKET_FLAG_IS_WRITE_NOTIFY;
         link_to_pending(sock);
-        goto Out;
+        return;
     }
 
     /* setup the buffer to send pending data */
@@ -295,13 +295,14 @@ void do_write(h2o_socket_t *_sock, h2o_iovec_t *_bufs, size_t bufcnt, h2o_socket
         sock->_wreq.bufs = h2o_mem_alloc(sizeof(h2o_iovec_t) * bufcnt);
         sock->_wreq.alloced_ptr = sock->_wreq.bufs;
     }
-    memcpy(sock->_wreq.bufs, bufs, sizeof(h2o_iovec_t) * bufcnt);
+    sock->_wreq.bufs[0].base = bufs[0].base + first_buf_written;
+    sock->_wreq.bufs[0].len = bufs[0].len - first_buf_written;
+    for (i = 1; i < bufcnt; ++i)
+        sock->_wreq.bufs[i] = bufs[i];
     sock->_wreq.cnt = bufcnt;
 
     /* schedule the write */
     link_to_statechanged(sock);
-Out:
-    free(tofree);
 }
 
 int h2o_socket_get_fd(h2o_socket_t *_sock)
@@ -398,62 +399,68 @@ static struct st_h2o_evloop_socket_t *create_socket(h2o_evloop_t *loop, int fd, 
     return sock;
 }
 
-static struct st_h2o_evloop_socket_t *create_socket_set_nodelay(h2o_evloop_t *loop, int fd, int flags)
-{
-    int on = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
-    return create_socket(loop, fd, flags);
-}
-
 h2o_socket_t *h2o_evloop_socket_create(h2o_evloop_t *loop, int fd, int flags)
 {
-    fcntl(fd, F_SETFL, O_NONBLOCK); /* not always needed under linux, the caller may already set this flag */
+    /* It is the reponsibility of the event loop to modify the properties of a socket for its use (e.g., set O_NONBLOCK). Setting
+     * TCP_NODELAY on a non-TCP socket would fail, but we can ignore it. */
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    int on = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
 
-    /**
-     * fd maybe from pipe(2)/eventfd(2)/socketpair(2)/unix domain socket besides tcp sockets.
-     * requiring the user of the event loop to set the flag would increase the complexity.
-     * so we set here and ignore errors
-     */
-    return &create_socket_set_nodelay(loop, fd, flags)->super;
+    return &create_socket(loop, fd, flags)->super;
+}
+
+static void set_nodelay_if_inet(int fd, int sa_family)
+{
+    /* only AF_INET or AF_INET6 sockets support TCP_NODELAY. Skip for all others. */
+    if (sa_family == AF_INET || sa_family == AF_INET6) {
+        int on = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+    }
 }
 
 h2o_socket_t *h2o_evloop_socket_accept(h2o_socket_t *_listener)
 {
     struct st_h2o_evloop_socket_t *listener = (struct st_h2o_evloop_socket_t *)_listener;
     int fd;
+    h2o_socket_t *sock;
+
+    /* cache the remote address, if we know that we are going to use the value (in h2o_socket_ebpf_lookup) */
+#if h2O_USE_EBPF_MAP
+    struct sockaddr_storage peeraddr[1];
+    socklen_t peeraddrlen[1] = {sizeof(peeraddr[0])};
+#else
+    struct sockaddr_storage *peeraddr = NULL;
+    socklen_t *peeraddrlen = NULL;
+#endif
 
 #if H2O_USE_ACCEPT4
-    if ((fd = accept4(listener->fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC)) == -1)
+    /* the anticipation here is that a socket returned by `accept4` will inherit the TCP_NODELAY flag from the listening socket */
+    if ((fd = accept4(listener->fd, (struct sockaddr *)peeraddr, peeraddrlen, SOCK_NONBLOCK | SOCK_CLOEXEC)) == -1)
         return NULL;
-    /**
-     * the listening socket should already have TCP_NODELAY set.
-     * if accepted socket can inherit this option form listing socket, do not call setsockopt(2) again.
-     * For platforms that support inheritance of TCP_NODELAY but do not provide accept4 (maybe it's only NetBSD?)
-     * so using H2O_USE_ACCEPT4 to judge TCP_NODELAY option inherit.
-     * FIXME: check more platforms: e.g. OpenBSD, Solaris, AIX
-     * TCP_NODELAY inherit from listening socket known under:
-     *  linux
-     *  FreeBSD version bigger than 4.5
-     *  NetBSD verison equal or bigger than 1.6(@see NetBSD6.0/usr/share/man/html4/tcp.html)
-     */
 #if !defined(NDEBUG) && defined(DEBUG)
-        {
-            /* check  TCP_NODELAY flag when debug */
-            int flag = 0;
-            socklen_t len = sizeof(flag);
-            if (0 == getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, &len)) {
-                assert(flag == 1);
-            }
+    { /* assert that TCP_NODELAY flag is inherited */
+        int flag = 0;
+        socklen_t len = sizeof(flag);
+        if (0 == getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, &len)) {
+            assert(flag == 1);
         }
+    }
 #endif
-
-    return &create_socket(listener->loop, fd, H2O_SOCKET_FLAG_IS_ACCEPTED_CONNECTION)->super;
+    sock = &create_socket(listener->loop, fd, H2O_SOCKET_FLAG_IS_ACCEPTED_CONNECTION)->super;
 #else
-    if ((fd = cloexec_accept(listener->fd, NULL, NULL)) == -1)
+    if ((fd = cloexec_accept(listener->fd, (struct sockaddr *)peeraddr, peeraddrlen)) == -1)
         return NULL;
     fcntl(fd, F_SETFL, O_NONBLOCK);
-    return &create_socket_set_nodelay(listener->loop, fd, H2O_SOCKET_FLAG_IS_ACCEPTED_CONNECTION)->super;
+    sock = &create_socket(listener->loop, fd, H2O_SOCKET_FLAG_IS_ACCEPTED_CONNECTION)->super;
+    set_nodelay_if_inet(fd, peeraddr->sa_family);
 #endif
+
+    if (peeraddr != NULL && *peeraddrlen <= sizeof(*peeraddr))
+        h2o_socket_setpeername(sock, (struct sockaddr *)peeraddr, *peeraddrlen);
+    if (h2o_socket_ebpf_lookup(listener->loop, h2o_socket_ebpf_init_key, sock).skip_tracing)
+        sock->_skip_tracing = 1;
+    return sock;
 }
 
 h2o_socket_t *h2o_socket_connect(h2o_loop_t *loop, struct sockaddr *addr, socklen_t addrlen, h2o_socket_cb cb)
@@ -469,7 +476,9 @@ h2o_socket_t *h2o_socket_connect(h2o_loop_t *loop, struct sockaddr *addr, sockle
         return NULL;
     }
 
-    sock = create_socket_set_nodelay(loop, fd, H2O_SOCKET_FLAG_IS_CONNECTING);
+    sock = create_socket(loop, fd, H2O_SOCKET_FLAG_IS_CONNECTING);
+    set_nodelay_if_inet(fd, addr->sa_family);
+
     h2o_socket_notify_write(&sock->super, cb);
     return &sock->super;
 }
@@ -480,30 +489,30 @@ h2o_evloop_t *create_evloop(size_t sz)
 
     memset(loop, 0, sz);
     loop->_statechanged.tail_ref = &loop->_statechanged.head;
-    h2o_linklist_init_anchor(&loop->_timeouts);
-
     update_now(loop);
+    /* 3 levels * 32-slots => 1 second goes into 2nd, becomes O(N) above approx. 31 seconds */
+    loop->_timeouts = h2o_timerwheel_create(3, loop->_now_millisec);
 
     return loop;
 }
 
 void update_now(h2o_evloop_t *loop)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    loop->_now = (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    gettimeofday(&loop->_tv_at, NULL);
+    loop->_now_nanosec = ((uint64_t)loop->_tv_at.tv_sec * 1000000 + loop->_tv_at.tv_usec) * 1000;
+    loop->_now_millisec = loop->_now_nanosec / 1000000;
 }
 
 int32_t adjust_max_wait(h2o_evloop_t *loop, int32_t max_wait)
 {
-    uint64_t wake_at = h2o_timeout_get_wake_at(&loop->_timeouts);
+    uint64_t wake_at = h2o_timerwheel_get_wake_at(loop->_timeouts);
 
     update_now(loop);
 
-    if (wake_at <= loop->_now) {
+    if (wake_at <= loop->_now_millisec) {
         max_wait = 0;
     } else {
-        uint64_t delta = wake_at - loop->_now;
+        uint64_t delta = wake_at - loop->_now_millisec;
         if (delta < max_wait)
             max_wait = (int32_t)delta;
     }
@@ -578,7 +587,7 @@ void h2o_evloop_destroy(h2o_evloop_t *loop)
     struct st_h2o_evloop_socket_t *sock;
 
     /* timeouts are governed by the application and MUST be destroyed prior to destroying the loop */
-    assert(h2o_linklist_is_empty(&loop->_timeouts));
+    assert(h2o_timerwheel_get_wake_at(loop->_timeouts) == UINT64_MAX);
 
     /* dispose all socket */
     while ((sock = loop->_pending_as_client) != NULL) {
@@ -600,14 +609,16 @@ void h2o_evloop_destroy(h2o_evloop_t *loop)
         free(sock);
     }
 
+    /* dispose backend-specific data */
+    evloop_do_dispose(loop);
+
     /* lastly we need to free loop memory */
+    h2o_timerwheel_destroy(loop->_timeouts);
     free(loop);
 }
 
 int h2o_evloop_run(h2o_evloop_t *loop, int32_t max_wait)
 {
-    h2o_linklist_t *node;
-
     /* update socket states, poll, set readable flags, perform pending writes */
     if (evloop_do_proceed(loop, max_wait) != 0)
         return -1;
@@ -615,39 +626,29 @@ int h2o_evloop_run(h2o_evloop_t *loop, int32_t max_wait)
     /* run the pending callbacks */
     run_pending(loop);
 
-    /* run the timeouts */
-    for (node = loop->_timeouts.next; node != &loop->_timeouts; node = node->next) {
-        h2o_timeout_t *timeout = H2O_STRUCT_FROM_MEMBER(h2o_timeout_t, _link, node);
-        h2o_timeout_run(loop, timeout, loop->_now);
+    /* run the expired timers at the same time invoking pending callbacks for every timer callback. This is an locality
+     * optimization; handles things like timeout -> write -> on_write_complete for each object. */
+    while (1) {
+        h2o_linklist_t expired;
+        h2o_linklist_init_anchor(&expired);
+        h2o_timerwheel_get_expired(loop->_timeouts, loop->_now_millisec, &expired);
+        if (h2o_linklist_is_empty(&expired))
+            break;
+        do {
+            h2o_timerwheel_entry_t *timer = H2O_STRUCT_FROM_MEMBER(h2o_timerwheel_entry_t, _link, expired.next);
+            h2o_linklist_unlink(&timer->_link);
+            timer->cb(timer);
+            run_pending(loop);
+        } while (!h2o_linklist_is_empty(&expired));
     }
-    /* assert h2o_timeout_run has called run_pending */
+
     assert(loop->_pending_as_client == NULL);
     assert(loop->_pending_as_server == NULL);
 
-    if (h2o_sliding_counter_is_running(&loop->exec_time_counter)) {
+    if (h2o_sliding_counter_is_running(&loop->exec_time_nanosec_counter)) {
         update_now(loop);
-        h2o_sliding_counter_stop(&loop->exec_time_counter, loop->_now);
+        h2o_sliding_counter_stop(&loop->exec_time_nanosec_counter, loop->_now_nanosec);
     }
 
     return 0;
-}
-
-void h2o_timeout__do_init(h2o_evloop_t *loop, h2o_timeout_t *timeout)
-{
-    h2o_linklist_insert(&loop->_timeouts, &timeout->_link);
-}
-
-void h2o_timeout__do_dispose(h2o_evloop_t *loop, h2o_timeout_t *timeout)
-{
-    h2o_linklist_unlink(&timeout->_link);
-}
-
-void h2o_timeout__do_link(h2o_evloop_t *loop, h2o_timeout_t *timeout, h2o_timeout_entry_t *entry)
-{
-    /* nothing to do */
-}
-
-void h2o_timeout__do_post_callback(h2o_evloop_t *loop)
-{
-    run_pending(loop);
 }

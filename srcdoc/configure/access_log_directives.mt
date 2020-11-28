@@ -95,13 +95,34 @@ As an example, it is possible to log timestamps in millisecond resolution using 
 <table>
 <caption>Access Timings</caption>
 <tr><th>Name<th>Description
-<tr><td><code>connect-time</code><td>time spent to establish the connection (i.e. since connection gets <code>accept(2)</code>-ed until first octet of the request is received)
-<tr><td><code>request-header-time</code><td>time spent receiving request headers
-<tr><td><code>request-body-time</code><td>time spent receiving request body
-<tr><td><code>request-total-time</code><td>sum of <code>request-header-time</code> and <code>request-body-time</code>
-<tr><td><code>process-time</code><td>time spent after receiving request, before starting to send response
-<tr><td><code>response-time</code><td>time spent sending response
-<tr><td><code>duration</code><td>sum of <code>request-total-time</code>, <code>process-time</code>, <code>response-time</code>
+<tr id="connect-time"><td><code>connect-time</code><td>time spent to establish the connection (i.e. since connection gets <code>accept(2)</code>-ed until first octet of the request is received)
+<tr id="request-header-time"><td><code>request-header-time</code><td>time spent receiving request headers
+<tr id="request-body-time"><td><code>request-body-time</code><td>time spent receiving request body
+<tr id="request-total-time"><td><code>request-total-time</code><td>sum of <code>request-header-time</code> and <code>request-body-time</code>
+<tr id="process-time"><td><code>process-time</code><td>time spent after receiving request, before starting to send response
+<tr id="response-time"><td><code>response-time</code><td>time spent sending response
+<tr id="duration"><td><code>duration</code><td>sum of <code>request-total-time</code>, <code>process-time</code>, <code>response-time</code>
+<tr id="total-time"><td><code>total-time</code><td>same as <code>duration</code> (since v2.3)
+</table>
+<table>
+<caption>Proxy Timings (since v2.3)</caption>
+<tr><th>Name<th>Description
+<tr id="proxy.idle-time"><td><code>proxy.idle-time</code><td>time spent after receiving request, before starting to connect to the upstream
+<tr id="proxy.connect-time"><td><code>proxy.connect-time</code><td>time spent to establish the connection (including SSL handshake)
+<tr id="proxy.request-time"><td><code>proxy.request-time</code><td>time spent sending request (header and body)
+<tr id="proxy.process-time"><td><code>proxy.process-time</code><td>time spent after sending request, before starting to receive response
+<tr id="proxy.response-time"><td><code>proxy.response-time</code><td>time spent receiving response
+<tr id="proxy.total-time"><td><code>proxy.total-time</code><td>sum of <code>proxy-request-time</code>, <code>proxy-process-time</code>, <code>proxy-response-time</code>
+</table>
+<table>
+<caption>Proxy (since v2.3)</caption>
+<tr><th>Name<th>Description
+<tr id="proxy.request-bytes"><td><code>proxy.request-bytes</code><td>number of bytes used by the proxy handler for sending the request (above TLS layer)
+<tr id="proxy.request-bytes-header"><td><code>proxy.request-bytes-header</code><td>number of bytes used by the proxy handler for sending the request header (above TLS layer)
+<tr id="proxy.request-bytes-body"><td><code>proxy.request-bytes-body</code><td>number of bytes used by the proxy handler for sending the request body (above TLS layer)
+<tr id="proxy.response-bytes"><td><code>proxy.response-bytes</code><td>number of bytes used by the proxy handler for receiving the response (above TLS layer)
+<tr id="proxy.response-bytes-header"><td><code>proxy.response-bytes-header</code><td>number of bytes used by the proxy handler for receiving the response header (above TLS layer)
+<tr id="proxy.response-bytes-body"><td><code>proxy.response-bytes-body</code><td>number of bytes used by the proxy handler for receiving the response body (above TLS layer)
 </table>
 <table>
 <caption>Connection (since v2.0)</caption>
@@ -112,6 +133,15 @@ As an example, it is possible to log timestamps in millisecond resolution using 
 <tr><td><code>ssl.session-id</code><td>base64-encoded value of the session id used for resuming the session (since v2.2)
 <tr><td><code>ssl.cipher</code><td>name of the <a href="https://tools.ietf.org/html/rfc5246#appendix-A.5">cipher suite</a> being used, obtained from <a href="https://www.openssl.org/docs/manmaster/ssl/SSL_CIPHER_get_name.html">SSL_CIPHER_get_name</a>
 <tr><td><code>ssl.cipher-bits</code><td>strength of the cipher suite in bits
+<tr><td><code>ssl.server-name</code><td>hostname provided in Server Name Indication (SNI) extension, if any
+</table>
+<table>
+<caption>Upstream Proxy Connection (since v2.3)</caption>
+<tr><th>Name<th>Description
+<tr><td><code>proxy.ssl.protocol-version</code><td>SSL protocol version obtained from <a href="https://www.openssl.og/docs/manmaster/ssl/SSL_get_version.html"><code>SSL_get_version</code></a>
+<tr><td><code>proxy.ssl.session-reused</code><td><code>1</code> if the <a href="configure/base_directives.html#ssl-session-resumption">SSL session was reused</a>, or <code>0</code> if not
+<tr><td><code>proxy.ssl.cipher</code><td>name of the <a href="https://tools.ietf.org/html/rfc5246#appendix-A.5">cipher suite</a> being used, obtained from <a href="https://www.openssl.org/docs/manmaster/ssl/SSL_CIPHER_get_name.html">SSL_CIPHER_get_name</a>
+<tr><td><code>proxy.ssl.cipher-bits</code><td>strength of the cipher suite in bits
 </table>
 <table>
 <caption>HTTP/2 (since v2.0)</caption>

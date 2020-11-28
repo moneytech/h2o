@@ -120,6 +120,7 @@ The directive maps extensions to a custom handler (e.g. FastCGI).
 
 <p>
 The directive accepts a mapping containing configuration directives that can be used at the <code>extension</code> level, together with a property named <code>extension</code> specifying a extension (starting with <code>.</code>) or a sequence of extensions to which the directives should be applied.
+If all the files (including those without extensions) shall be mapped, this property must be set to <code>default</code>. 
 Only one handler must exist within the directives.
 </p>
 <div class="example">
@@ -462,7 +463,7 @@ Synonym of <a href="configure/file_directives.html#file.send-compressed"><code>f
 </div>
 <div id="footer">
 <p>
-Copyright &copy; 2015 <a href="http://dena.com/intl/">DeNA Co., Ltd.</a> et al.
+Copyright &copy; 2015-2020 <a href="http://dena.com/intl/">DeNA Co., Ltd.</a> et al.
 </p>
 </div>
 </body>
